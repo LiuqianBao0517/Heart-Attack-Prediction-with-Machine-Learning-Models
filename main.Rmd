@@ -1,0 +1,406 @@
+---
+title: "Heart Attack Prediction with Machine Learning Models"
+author: "Liuqian Bao"
+date: "2024-01-28"
+output:
+    html_document:
+      toc: true
+      toc_float: true
+      code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+#library 
+library(skimr)
+library(tidyverse)
+library(ggplot2)
+library(corrplot)
+library(readr)
+library(tidymodels)
+library(discrim)
+library(vip)
+tidymodels_prefer()
+
+#random seed
+set.seed(150)
+
+#load the data
+heart <- read_csv("heart.csv")
+```
+
+## Data Source and Goals
+
+This project is based on the heart attack dataset found on [Kaggle: heart-attack-analysis-prediction-dataset](Kaggle:%20kaggle%20datasets%20download%20-d%20rashikrahmanpritom/heart-attack-analysis-prediction-dataset).
+
+Citation: Rahman R. *Heart Attack Analysis & Prediction Dataset.* Obtained at: Kaggle:%20kaggle%20datasets%20download%20-d%20rashikrahmanpritom/heart-attack-analysis-prediction-dataset.
+
+The goal of this project is to build a machine learning model to predict whether a person has higher risk of being diagnosed with heart attack(indicated by $\gt$ 50% diameter narrowing in artery) or not(indicated by $\lt$ 50% diameter narrowing in artery) based on their health information.
+
+The response variable `output`, which the models will be predicting, takes two levels: "1" means that the patient has $\gt$ 50% diameter narrowing in artery, which means that they have a higher risk of being diagnosed with heart attack; "0" means that the patient has $\lt$ 50% diameter narrowing in artery, and thus a lower risk of being diagnosed. The predictors I will use to build the models include the patient's age, gender, blood pressure, cholesterol level, and results from various medical tests commonly used to diagnose heart diseases (for example, their chest pain level, thal rate, and resting electrocardiograph result).
+
+![](Blausen_HeartAttack.png){width="150" height="206"}
+
+## EDA
+
+As we can see in the codebook, even though the variables `output`, `sex`, `cp`, `restecg`, `exng`, `slp`, `fbs`, and `thall` take numerical values, the numbers are actually encoding the categories, or levels, of them. I chose to force them to be categorical for future models to work properly.
+
+```{r echo=FALSE}
+heart$fbs <- as.factor(heart$fbs)
+heart$output <- as.factor(heart$output)
+heart$sex <- as.factor(heart$sex)
+heart$cp <- as.factor(heart$cp)
+heart$restecg <- as.factor(heart$restecg)
+heart$exng <- as.factor(heart$exng)
+heart$thall <- as.factor(heart$thall)
+heart$slp <- as.factor(heart$slp)
+```
+
+### Skim table
+
+Here are some summary statistics of the data:
+
+```{r}
+skim(heart)
+```
+
+There are in total 303 observations and 13 predictors. The response variable I will be working with is `output`, the categorical variable that indicates whether the person is diagonised with heart attack (1 for yes and 0 for no).
+
+Luckily, the dataset contains no missing value.
+
+### Distribution of `output`
+
+```{r}
+ggplot(data = heart) + 
+  aes(x = output) + 
+  geom_bar(fill = c("cyan3", "salmon")) +
+  ggtitle("Bar Plot of output") + 
+  xlab("Frequency") + 
+  ylab("Output")
+```
+
+As we can see in this bar plot of `output` against frequencies, around 140/303 of the patients has a lower chance of heart attack, and around 160/303 of the patients has a higher chance of heart attack. The classes of the response variable are roughly balanced.
+
+### Relationships between predictors
+
+```{r}
+heart_numeric <- select_if(heart, is.numeric)
+heart_numeric %>% 
+  cor() %>% 
+  corrplot(method = "number")
+```
+
+As we can see in the correlation graph, `slp`(slope) and `oldpeak` have a negative correlation; `thalachh`(maximum heart rate achieved) and `age` have a negative correlation; `oldpeak` has a negative relationship with `thalachh`(maximum heart rate achieved); `slp`(slope) has a positive relationship with `thalachh`(maximum heart rate achieved); `caa`(number of major vessels (0-3)) and `age` also has a positive relationship.
+
+Next, we are going to explore these relationships by plotting these predictors against each other.
+
+Here are some notable correlations I found plotting the predictors:
+
+Relationship between oldpeak and slope:
+
+```{r}
+heart %>% 
+  ggplot(aes(x = oldpeak, fill = slp)) +
+  geom_boxplot() +
+  labs(title = "Box Plot of Oldpeak grouped by Slope",
+    y = "Oldpeak", 
+    x = "Slope")
+```
+
+Relationship between maximum heart rate achieved and age: 
+
+```{r}
+ggplot(data = heart) + 
+  aes(x = thalachh, y = age) + 
+  geom_point(color = "cyan3") +
+  ggtitle("Scatter Plot of Maximum heart rate achieved against Age") + 
+  xlab("Maximum heart rate achieved") + 
+  ylab("Age") +
+  geom_smooth(color = "salmon")
+```
+
+However, there is no correlations between predictors greater than 0.5, which means that there is not much colinearity between any of the predictors, so we do not need to worry too much about that. 
+
+### Influence of `age` and `sex`
+
+Next, I am going to explore the effects of `age` and `sex` on `output`, because many scientific studies have shown relationships between these two factors and the risk of having heart attack.
+
+```{r}
+ggplot(data = heart) +
+  aes(x = output, fill = sex) +
+  geom_bar(position = "fill") +
+  ggtitle("Percent stack bar chart of output by sex") 
+```
+
+In terms of proportions in the "higher risk"(output 1) group, males(1, blue) seem to have a higher risk of having heart attack. However, the proportion of female(0, red) in the "higher risk" group is greater than that in the "lower risk"(output 0) group, which suggests that females potentially have a higher risk of heart attack. However, we cannot just draw conclusions from looking at these proportions, because there could be unknown sampling bias involved. 
+
+```{r}
+heart %>% 
+  ggplot(aes(x = age, fill = output)) +
+  geom_boxplot() +
+  labs(title = "Box Plot of Age grouped by Output",
+    y = "Output", 
+    x = "Age") +
+  scale_fill_manual(values = c("cyan3", "salmon"))
+```
+
+As we can see in the box plot, the average age of the "high risk" group(1, red) is lower than that of the "lower risk" group(0, blue), but this is specific to this sample and its age distribution, so we cannot jump to the conclusion that age has a negative relationship with the risk of heart attack.
+
+## Stratified sampling and k-fold cross valivation
+
+Stratified sampling is used when splitting the dataset into training(70%) and testing(30%) groups, so that the two sets have the same distribution of `output` as the population.
+
+K-fold cross-validation is used to estimate the testing rmse using the training set and evaluate model performance. Here I choose k to equal 10. The folds are also stratified on `output`.
+
+```{r}
+# split the dataset into training and testing sets
+heart_split <- initial_split(heart, strata = output, prop = 0.7)
+heart_train <- training(heart_split)
+heart_test <- testing(heart_split)
+
+# create folds
+heart_folds <- vfold_cv(heart_train, v = 10, strata = output)
+```
+
+## Recipe
+
+All the models I will build in this project will be based on the same recipe, which includes all the predictors in the dataset. Also, in this recipe all the predictors are centered and scaled and all the categorical predictors are dummy coded for the models to work properly. 
+
+```{r include=FALSE}
+#set up the recipe
+heart_recipe <- recipe(output ~ ., 
+                         data = heart_train) %>%  
+  step_dummy(all_nominal_predictors()) %>% 
+  step_center(all_predictors()) %>% 
+  step_scale(all_predictors())
+#check the recipe
+prep(heart_recipe) %>% bake(heart_train)
+```
+
+## Model Building
+
+In this project, I choose to fit 4 different types of models: logistic regression, k-nearest-neighbor, elastic net, and random forest. Each model, except the logistic regression, will be tuned by their hyper-parameters using a grid, which automatically fits all possible combination of different hyper-parameters(each has some chosen levels within a chosen range) on the training data. 
+
+### Logistic regression model
+
+The first model I choose to fit is a simple logistic regression model. There is no hyper-parameter to tune for this model.
+
+```{r}
+#set up the model
+logreg_mode <- logistic_reg()
+#set up the workflow 
+logreg_wf <- workflow() %>% 
+  add_model(logreg_mode) %>% add_recipe(heart_recipe)
+#fit the model on the training set (10 folds)
+logreg_fit <- tune_grid(object = logreg_wf, 
+                        resamples = heart_folds)
+```
+
+### KNN model
+
+The second type of model I choose is the k-nearest neighbor model. I choose to tune the number of neighbors, k, ranging from 1 to 20, with 20 levels. 
+
+```{r}
+#set up the model
+knn_mode <- nearest_neighbor(neighbors = tune()) %>% 
+  set_engine("kknn") %>% 
+  set_mode("classification")
+#set up the workflow 
+knn_wf <- workflow() %>% 
+  add_model(knn_mode) %>% add_recipe(heart_recipe)
+#set up the grid tuning the hyper-parameters
+knn_grid <- grid_regular(neighbors(range = c(1, 80)), levels = 40)
+#fit the grid on the training set (10 folds)
+# knn_fit <- tune_grid(object = knn_wf, 
+#                      resamples = heart_folds,
+#                      grid = knn_grid)
+```
+
+### Elastic Net model
+
+The third type of model I choose to fit is the elastic net model, which is the weighted average of the LASSO and ridge regression model. I choose to tune the hyper-parameters `penalty`(the coefficient of the penalty term) and `mixture`(the weight of LASSO model), with default range for penalty, range (0,1) for mixture, and 10 levels for each. 
+
+```{r}
+#set up the model
+en_mode <- logistic_reg(penalty = tune(), mixture = tune()) %>% 
+  set_engine("glmnet") 
+#set up the workflow 
+en_wf <- workflow() %>% 
+  add_model(en_mode) %>% add_recipe(heart_recipe)
+#set up the grid tuning the hyper-parameters
+en_grid <- grid_regular(penalty(), mixture(range = c(0,1)), levels = 10)
+#fit the grid on the training set (10 folds)
+# en_fit <- tune_grid(object = en_wf, 
+#                      resamples = heart_folds,
+#                      grid = en_grid)
+```
+
+### Random Forest model
+
+The last type of model I choose to fit is the random forest model. I choose to tune the hyper-parameters `mtry`(the number of predictors the model randomly select at each split), `trees`(number of trees fitted), and `min_n`(if splitting a node generates two nodes for which one is smaller than `min_n` then the node is not split, and it becomes a leaf node). I choose the range of `mtry` to be 1 to 13, since there are 13 predictors in total, the range of `trees` to be 5 to 100, and the range of `min_n` to be 1 to 400(so that there is at least one split in each tree), with 13 levels each. 
+
+Citation: https://stats.stackexchange.com/questions/158583/what-does-node-size-refer-to-in-the-random-forest/158590#158590?s=a6990515a7c3414e9286a7f6d5664cf7
+
+```{r}
+#set up the model
+rf_mode <- rand_forest(mtry = tune(), 
+                       trees = tune(), 
+                       min_n = tune()) %>% 
+  set_engine("ranger", importance = "impurity") %>% 
+  set_mode("classification")
+#set up the workflow 
+rf_wf <- workflow() %>% 
+  add_model(rf_mode) %>% add_recipe(heart_recipe)
+#set up the grid tuning the hyper-parameters
+rf_grid <- grid_regular(mtry(range = c(1, 13)), 
+                        trees(range = c(2, 30)), 
+                        min_n(range = c(1, 50)), levels = 7)
+#fit the grid on the training set (10 folds)
+# rf_fit <- tune_grid(object = rf_wf, 
+#                      resamples = heart_folds,
+#                      grid = rf_grid)
+```
+
+### Saving models
+
+The tuned models are saved to an RDS file to avoid rerunning.
+
+```{r}
+# #logistic regression 
+# write_rds(logreg_fit, file = "tuned_models/logreg.rds")
+# #knn 
+# write_rds(knn_fit, file = "tuned_models/knn.rds")
+# #elastic net
+# write_rds(en_fit, file = "tuned_models/en.rds")
+# #random forest 
+# write_rds(rf_fit, file = "tuned_models/rf.rds")
+```
+
+## Model Results
+
+### Read models
+
+Now we can read back the tuned model results and compare all the models we fit to the cross-validation set by their mean `accuracy` and `roc_auc`. 
+
+```{r}
+#logistic regression 
+logreg_res <- read_rds(file = "tuned_models/logreg.rds")
+#knn 
+knn_res <- read_rds(file = "tuned_models/knn.rds")
+#elastic net
+en_res <- read_rds(file = "tuned_models/en.rds")
+#random forest 
+rf_res <- read_rds(file = "tuned_models/rf.rds")
+```
+
+### Logistic regression result
+
+The logistic regression model has an accuracy of 0.824 and a roc_auc of 0.853. 
+
+```{r}
+#cv result
+collect_metrics(logreg_res)
+```
+
+### Knn result
+
+For the knn models, I autoplotted the accuracy and roc_auc of all the models tuned in the grid. The table shows the best 5 models in terms of roc_auc. 
+
+```{r}
+autoplot(knn_res)
+show_best(knn_res)
+```
+
+From the plots we can see, as we increase the number of neighbours, accuracy and roc_auc increase a lot at first, but they level off after about k = 40. The best knn model I obtained is the one with k = 75. Its cross-validation roc_auc is 0.901. 
+
+### Elastic net result
+
+For the elastic net models, I autoplotted the accuracy and roc_auc of all the models tuned in the grid. The table shows the best 5 models in terms of roc_auc. 
+
+```{r}
+autoplot(en_res)
+show_best(en_res)
+```
+
+As we can see in the plots, as we increase the amount of regularization, the accuracy and roc_auc stay steady before $\lambda = 0.01$, increase slightly as $\lambda$ approaches 0.1, and then dropped dramatically as $\lambda$ increases to 1. The best knn model I obtained is the one with penalty($\lambda$) = 0.0774 and mixture(proportion of Lasso) = 0. Its cross-validation roc_auc is 0.894. 
+
+### Random forest result
+
+For the random forest models, I autoplotted the accuracy and roc_auc of all the models tuned in the grid. The table shows the best 5 models in terms of roc_auc. 
+
+```{r}
+autoplot(rf_res)
+show_best(rf_res)
+```
+
+As we can see the plots, the model tends to perform better as the minimal node size decreases(which means the trees get deeper). 
+However, greater number of trees does not necessarily mean better performance of the model, except when there are only 2 trees, the performance is always the worst.  
+The number of predictors randomly selected on each split appears to have a lot of effect on the accuracy and roc_auc as well, but the relationship is also non-linear. 
+The best model I obtained is the one with `mtry` = 3, `trees` = 20, and `min_n` = 25. Its roc_auc is 0.906. 
+
+## Best Models
+
+Now, I will bring together models of the four different types and compare their `roc_auc` to determine two best models that I want to fit to my testing set. 
+
+### Select best models
+
+In this step, I put together the cross-validation roc_auc for the best model of each type. The result is shown in a single table for easier comparison. 
+
+```{r}
+# put together the 4 results 
+roc_aucs <- c(0.8530808,
+              0.9013636,
+              0.8938889,
+              0.9058333)
+# model names
+mode_names <- c("Logistic Regression",
+            "K-nearest Neighbor",
+            "Elastic Net",
+            "Random Forest")
+
+# final table for comparison
+heart_results <- tibble(Model = mode_names,
+                        ROC_AUC = roc_aucs)
+
+heart_results <- heart_results %>% 
+  arrange(-roc_aucs)
+
+heart_results
+```
+
+As we can see in the table, the best random forest model wins the game by a very small margin. The best knn model comes next. I decide to fit the best random forest model to the testing set and see what happens. 
+
+### Evaluate on the testing set
+
+Below I extracted the roc_auc of my win model, the best random forest model (randomly selected predictors = 3, number of tress = 20, minimum node size = 25). 
+
+```{r}
+# finalize the workflow for the best random forest model
+best_rf <- select_best(rf_res, metric = "roc_auc")
+final_wf <- finalize_workflow(rf_wf, best_rf)
+final_fit <- fit(final_wf, heart_train)
+# testing roc_auc
+augment(final_fit, new_data = heart_test) %>%
+  roc_auc(output, .pred_0)
+```
+
+My win model has a roc_auc of 0.8847619 on the testing set. As we can see that this value is lower than the cross-validation roc_auc. This could be due to the random splitting of the training and testing set. Overall, an roc_auc of 0.88 means that he random forest model I selected did a good job, but there are certainly limitations to this model and this type of models. 
+
+### Variable importance plot
+
+```{r fig.cap="Variable importance plot from the training fit of the final random forest model"}
+# Using the training fit to create the VIP because the model was not actually fit to the testing data
+final_fit %>% 
+  extract_fit_engine() %>% 
+  vip()
+```
+
+I also made a variable importance plot from the training fit of the final random forest model to try to answer my question at the beginning whether sex and age have great influence on the risk of getting heart attack. In the EDA section we could see clear correlations between these two factors and the `output`. However, it is interesting that the vip plot shows the more important predictors for the random forest model is `thall` and `oldpeak`, while `age` and `sex` are not nearly as important. 
+
+## Conclusion
+
+In this project, I explored the heart attack dataset found on [Kaggle: heart-attack-analysis-prediction-dataset](Kaggle:%20kaggle%20datasets%20download%20-d%20rashikrahmanpritom/heart-attack-analysis-prediction-dataset). Four types of models, logistic regression, k-nearest neighbor, elastic net, and random forest are fitted to the a 10 fold cross-validation of the training data. Judged by the cross validation roc-auc, the best model is a random forest model with predictors = 3, number of tress = 20, minimum node size = 25. This model made a testing roc_auc of 0.88, which is pretty good but definitely has room for improvement.
+
+One thing that I found interesting and probably could be investigated further is that the tuning range of the hyper-parameters actually has a larger influence on the resulting best model than I thought. Also, when I forgot to fix the random seed at first, the cross-validation roc_aoc actually changes a lot between different fit of the same combination of hyper-parameters. I suspect this has to do with the mechanism of the random forest model. 
+
+In conclusion, my best model did a good job predicting the risk of heart attack using the patients medical information! 
